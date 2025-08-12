@@ -279,28 +279,35 @@ fn main() {
 
     let mut stmt = conn.prepare("SELECT id, name FROM object_store").unwrap();
     let mut rows = stmt.query([]).unwrap();
+    let mut root = json::object::Object::new();
     while let Some(row) = rows.next().unwrap() {
-        println!("{row:?}");
-    }
+        let object_store_id: u32 = row.get(0).unwrap();
+        let object_store_name: String = row.get(1).unwrap();
 
-    let mut stmt = conn
-        .prepare("SELECT object_store_id, data FROM object_data")
-        .unwrap();
-    let mut rows = stmt.query([]).unwrap();
-    let mut output = Vec::new();
-    while let Some(row) = rows.next().unwrap() {
-        let rusqlite::types::ValueRef::Blob(data) = row.get_ref(1).unwrap() else {
-            panic!();
-        };
+        let mut stmt = conn
+            .prepare("SELECT data FROM object_data WHERE object_store_id = ?")
+            .unwrap();
+        let mut rows = stmt.query([object_store_id]).unwrap();
+        let mut output = Vec::new();
+        let mut seq = Vec::new();
+        while let Some(row) = rows.next().unwrap() {
+            let rusqlite::types::ValueRef::Blob(data) = row.get_ref(0).unwrap() else {
+                panic!();
+            };
 
-        let mut decoder = snap::raw::Decoder::new();
-        let output_len = snap::raw::decompress_len(data).unwrap();
-        if output_len > output.len() {
-            output.resize(output_len, 0);
+            let mut decoder = snap::raw::Decoder::new();
+            let output_len = snap::raw::decompress_len(data).unwrap();
+            if output_len > output.len() {
+                output.resize(output_len, 0);
+            }
+            decoder.decompress(data, &mut output).unwrap();
+
+            let value = read_document(&output[..output_len]);
+            seq.push(value);
         }
-        decoder.decompress(data, &mut output).unwrap();
-
-        let value = read_document(&output[..output_len]);
-        println!("{}", value.to_string());
+        let seq = JsonValue::Array(seq);
+        root.insert(&object_store_name, seq);
     }
+    let document = JsonValue::Object(root);
+    println!("{}", document.to_string());
 }
