@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use clap::Parser;
 use json::JsonValue;
 
 fn u8_slice_as_u16_slice(bytes: &[u8]) -> Cow<'_, [u16]> {
@@ -266,4 +267,40 @@ fn test() {
     );
 }
 
-fn main() {}
+#[derive(Parser, Debug)]
+struct Args {
+    database: String,
+}
+
+fn main() {
+    let args = Args::parse();
+
+    let conn = rusqlite::Connection::open(&args.database).unwrap();
+
+    let mut stmt = conn.prepare("SELECT id, name FROM object_store").unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        println!("{row:?}");
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT object_store_id, data FROM object_data")
+        .unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    let mut output = Vec::new();
+    while let Some(row) = rows.next().unwrap() {
+        let rusqlite::types::ValueRef::Blob(data) = row.get_ref(1).unwrap() else {
+            panic!();
+        };
+
+        let mut decoder = snap::raw::Decoder::new();
+        let output_len = snap::raw::decompress_len(data).unwrap();
+        if output_len > output.len() {
+            output.resize(output_len, 0);
+        }
+        decoder.decompress(data, &mut output).unwrap();
+
+        let value = read_document(&output[..output_len]);
+        //println!("{value:?}");
+    }
+}
