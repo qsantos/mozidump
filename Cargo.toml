@@ -1,0 +1,12 @@
+[package]
+name = "mozidb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+json = "0.12.4"
+snap = "1.1.1"
+
+[profile.samply]
+inherits = "release"
+debug = true
