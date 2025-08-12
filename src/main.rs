@@ -301,6 +301,6 @@ fn main() {
         decoder.decompress(data, &mut output).unwrap();
 
         let value = read_document(&output[..output_len]);
-        //println!("{value:?}");
+        println!("{}", value.to_string());
     }
 }
