@@ -223,6 +223,13 @@ impl<'a> MozSerialDecoder<'a> {
     }
 }
 
+fn read_document(input: &[u8]) -> JsonValue {
+    let mut decoder = MozSerialDecoder::new(input);
+    decoder.read_header();
+    decoder.read_transfer_map();
+    decoder.read_value()
+}
+
 #[test]
 fn test() {
     let mut decoder = snap::raw::Decoder::new();
@@ -231,10 +238,7 @@ fn test() {
     let mut output = vec![0; output_len];
     decoder.decompress(input, &mut output).unwrap();
 
-    let mut decoder = MozSerialDecoder::new(&output);
-    decoder.read_header();
-    decoder.read_transfer_map();
-    let value = decoder.read_value();
+    let value = read_document(&output);
     use json::object;
     assert_eq!(
         value,
