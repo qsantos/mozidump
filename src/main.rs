@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::io::Write;
 
 use clap::Parser;
-use json::JsonValue;
 
 fn u8_slice_as_u16_slice(bytes: &[u8]) -> Cow<'_, [u16]> {
     assert!(bytes.len() % 2 == 0, "length must be even");
@@ -115,94 +114,59 @@ impl<'a> MozSerialDecoder<'a> {
         ret
     }
 
+    fn skip_bytes(&mut self, count: usize) {
+        self.pos += count.next_multiple_of(8); // handles padding
+    }
+
     fn read_pair(&mut self) -> (u32, u32) {
         let ret = (self.peek_tag(), self.peek_data());
         self.pos += 8;
         ret
     }
 
-    fn read_header(&mut self) {
-        if self.peek_tag() == data_type::HEADER {
-            self.read_pair();
-        }
-    }
-
-    fn read_transfer_map(&mut self) {
-        assert_ne!(self.peek_tag(), data_type::TRANSFER_MAP_HEADER);
-    }
-
-    fn read_string(&mut self, data: u32) -> String {
+    fn skip_string(&mut self, data: u32) {
         let length: usize = (data & 0x7FFFFFFF).try_into().unwrap();
         let is_latin1 = (data & 0x80000000) != 0;
         if is_latin1 {
-            let bytes = self.read_bytes(length);
-            String::from_utf8(bytes.to_vec()).unwrap() // TODO: actual latin1
+            self.skip_bytes(length);
         } else {
-            let bytes = self.read_bytes(length * 2);
-            let shorts = u8_slice_as_u16_slice(bytes);
-            String::from_utf16(shorts.as_ref()).unwrap()
+            self.skip_bytes(length * 2);
         }
     }
 
-    fn read_value(&mut self) -> JsonValue {
+    fn skip_value(&mut self) {
         let (tag, data) = self.read_pair();
         match tag {
-            0..data_type::FLOAT_MAX => {
-                let bytes = ((tag as u64) << 32) | (data as u64);
-                let float = f64::from_bits(bytes);
-                JsonValue::Number(float.into())
-            }
-            data_type::NULL => JsonValue::Null,
-            data_type::UNDEFINED => JsonValue::Null, // TODO
-            data_type::INT32 => {
-                let data = data as i32;
-                JsonValue::Number(data.into())
-            }
-            data_type::BOOLEAN | data_type::BOOLEAN_OBJECT => JsonValue::Boolean(data != 0),
-            data_type::STRING | data_type::STRING_OBJECT => {
-                JsonValue::String(self.read_string(data))
-            }
+            0..data_type::FLOAT_MAX
+            | data_type::NULL
+            | data_type::UNDEFINED
+            | data_type::INT32
+            | data_type::BOOLEAN
+            | data_type::BOOLEAN_OBJECT => (),
+            data_type::STRING | data_type::STRING_OBJECT => self.skip_string(data),
             data_type::BIGINT | data_type::BIGINT_OBJECT => unimplemented!("bigint"),
             data_type::DATE_OBJECT => unimplemented!("date"),
             data_type::REGEXP_OBJECT => unimplemented!("regexp"),
-            data_type::ARRAY_OBJECT => {
-                let mut vec = Vec::new();
-                loop {
-                    let key = self.read_value();
-                    if key == JsonValue::Null {
-                        break;
-                    }
-                    let JsonValue::Number(key) = key else {
-                        panic!()
-                    };
-                    let key = key.as_fixed_point_u64(0).unwrap() as usize;
-                    let value = self.read_value();
-                    if key >= vec.len() {
-                        vec.resize(key + 1, JsonValue::Null);
-                    }
-                    vec[key] = value;
+            data_type::ARRAY_OBJECT => loop {
+                if self.peek_tag() == data_type::END_OF_KEYS {
+                    self.read_pair();
+                    break;
                 }
-                JsonValue::Array(vec)
-            }
-            data_type::OBJECT_OBJECT => {
-                let mut obj = json::object::Object::new();
-                loop {
-                    let key = self.read_value();
-                    if key == JsonValue::Null {
-                        break;
-                    }
-                    let JsonValue::String(key) = key else {
-                        panic!()
-                    };
-                    let value = self.read_value();
-                    obj.insert(&key, value);
+                self.skip_value();
+                self.skip_value();
+            },
+            data_type::OBJECT_OBJECT => loop {
+                if self.peek_tag() == data_type::END_OF_KEYS {
+                    self.read_pair();
+                    break;
                 }
-                JsonValue::Object(obj)
-            }
+                self.skip_value();
+                self.skip_value();
+            },
             data_type::BACK_REFERENCE_OBJECT => unimplemented!("back reference"),
             data_type::MAP_OBJECT => unimplemented!("map"),
             data_type::SET_OBJECT => unimplemented!("set"),
-            data_type::END_OF_KEYS => JsonValue::Null, // TODO: need sentinel to support Set object
+            data_type::END_OF_KEYS => unreachable!(),
             datatype => unimplemented!("unimplemented datatype {datatype:#X}"),
         }
     }
@@ -244,22 +208,19 @@ impl<'a> MozSerialDecoder<'a> {
             data_type::REGEXP_OBJECT => unimplemented!("regexp"),
             data_type::ARRAY_OBJECT => {
                 writer.write_all(b"[")?;
-                let mut index = 0;
+                let mut first = true;
                 loop {
-                    let key = self.read_value();
-                    if key == JsonValue::Null {
+                    if self.peek_tag() == data_type::END_OF_KEYS {
+                        self.read_pair();
                         break;
                     }
-                    let JsonValue::Number(key) = key else {
-                        panic!()
-                    };
-                    let key = key.as_fixed_point_u64(0).unwrap() as usize;
-                    assert_eq!(key, index);
-                    if index != 0 {
+                    self.skip_value();
+                    if first {
+                        first = false;
+                    } else {
                         write!(writer, ",")?;
                     }
                     self.write_value(writer)?;
-                    index += 1;
                 }
                 writer.write_all(b"]")?;
             }
@@ -285,18 +246,19 @@ impl<'a> MozSerialDecoder<'a> {
             data_type::BACK_REFERENCE_OBJECT => unimplemented!("back reference"),
             data_type::MAP_OBJECT => unimplemented!("map"),
             data_type::SET_OBJECT => unimplemented!("set"),
-            data_type::END_OF_KEYS => (),
+            data_type::END_OF_KEYS => unreachable!(),
             datatype => unimplemented!("unimplemented datatype {datatype:#X}"),
         }
         Ok(())
     }
-}
 
-fn read_document(input: &[u8]) -> JsonValue {
-    let mut decoder = MozSerialDecoder::new(input);
-    decoder.read_header();
-    decoder.read_transfer_map();
-    decoder.read_value()
+    fn write_document<W: Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        if self.peek_tag() == data_type::HEADER {
+            self.read_pair();
+        }
+        assert_ne!(self.peek_tag(), data_type::TRANSFER_MAP_HEADER);
+        self.write_value(writer)
+    }
 }
 
 #[test]
@@ -307,31 +269,15 @@ fn test() {
     let mut output = vec![0; output_len];
     decoder.decompress(input, &mut output).unwrap();
 
-    let value = read_document(&output);
-    use json::object;
+    let mut json = std::io::BufWriter::new(Vec::new());
+    MozSerialDecoder::new(&output)
+        .write_document(&mut json)
+        .unwrap();
+    let json = json.into_inner().unwrap();
+    let json = String::from_utf8(json).unwrap();
     assert_eq!(
-        value,
-        object! {
-            id: "0002e87b-063c-4d40-a534-1039d5bd6fa1",
-            started: "2023-12-12T18:13:32.014Z",
-            finished: "2023-12-12T18:13:34.165Z",
-            copiedText: ",",
-            mistake: object! {
-                expectedCharacter: "7",
-                mistakenCharacter: "z"
-            },
-            settings: object! {
-                wpm: 30,
-                tone: 600,
-                error_tone: 200,
-                word_length: 5,
-                charset: "KMURESNAPTLWI.JZ=FOY,VG5/Q92H38B?47C1D60X"
-            },
-            elapsed: 1,
-            copiedCharacters: 1,
-            score: 1,
-            copiedGroups: 0
-        }
+        json,
+        r#"{"id":"0002e87b-063c-4d40-a534-1039d5bd6fa1","started":"2023-12-12T18:13:32.014Z","finished":"2023-12-12T18:13:34.165Z","copiedText":",","mistake":{"expectedCharacter":"7","mistakenCharacter":"z"},"settings":{"wpm":30,"tone":600,"error_tone":200,"word_length":5,"charset":"KMURESNAPTLWI.JZ=FOY,VG5/Q92H38B?47C1D60X"},"elapsed":1,"copiedCharacters":1,"score":1,"copiedGroups":0}"#
     );
 }
 
@@ -387,10 +333,9 @@ fn main() -> std::io::Result<()> {
                 writer.write_all(b",")?;
             }
 
-            let mut decoder = MozSerialDecoder::new(&output[..output_len]);
-            decoder.read_header();
-            decoder.read_transfer_map();
-            decoder.write_value(writer).unwrap();
+            MozSerialDecoder::new(&output[..output_len])
+                .write_document(writer)
+                .unwrap();
         }
         writer.write_all(b"]")?;
     }
