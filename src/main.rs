@@ -101,18 +101,12 @@ impl<'a> MozSerialDecoder<'a> {
         MozSerialDecoder { input, pos: 0 }
     }
 
-    fn peek_u32(&self) -> u32 {
+    fn peek_data(&self) -> u32 {
         u32::from_le_bytes(self.input[self.pos..self.pos + 4].try_into().unwrap())
     }
 
-    fn peek_next_u32(&self) -> u32 {
+    fn peek_tag(&self) -> u32 {
         u32::from_le_bytes(self.input[self.pos + 4..self.pos + 8].try_into().unwrap())
-    }
-
-    fn peek_pair(&self) -> (u32, u32) {
-        let data = self.peek_u32();
-        let tag = self.peek_next_u32();
-        (tag, data)
     }
 
     fn read_bytes(&mut self, count: usize) -> &[u8] {
@@ -121,28 +115,20 @@ impl<'a> MozSerialDecoder<'a> {
         ret
     }
 
-    fn read_u32(&mut self) -> u32 {
-        let res = self.peek_u32();
-        self.pos += 4;
-        res
-    }
-
     fn read_pair(&mut self) -> (u32, u32) {
-        let data = self.read_u32();
-        let tag = self.read_u32();
-        (tag, data)
+        let ret = (self.peek_tag(), self.peek_data());
+        self.pos += 8;
+        ret
     }
 
     fn read_header(&mut self) {
-        let (tag, _data) = self.peek_pair();
-        if tag == data_type::HEADER {
+        if self.peek_tag() == data_type::HEADER {
             self.read_pair();
         }
     }
 
     fn read_transfer_map(&mut self) {
-        let (tag, _data) = self.peek_pair();
-        assert_ne!(tag, data_type::TRANSFER_MAP_HEADER);
+        assert_ne!(self.peek_tag(), data_type::TRANSFER_MAP_HEADER);
     }
 
     fn read_string(&mut self, data: u32) -> String {
@@ -281,7 +267,7 @@ impl<'a> MozSerialDecoder<'a> {
                 writer.write_all(b"{")?;
                 let mut first = true;
                 loop {
-                    if self.peek_pair().0 == data_type::END_OF_KEYS {
+                    if self.peek_tag() == data_type::END_OF_KEYS {
                         self.read_pair();
                         break;
                     }
