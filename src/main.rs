@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::io::Write;
 
 use clap::Parser;
 use json::JsonValue;
@@ -144,22 +145,17 @@ impl<'a> MozSerialDecoder<'a> {
         assert_ne!(tag, data_type::TRANSFER_MAP_HEADER);
     }
 
-    fn read_string_value(&mut self, data: u32) -> JsonValue {
+    fn read_string(&mut self, data: u32) -> String {
         let length: usize = (data & 0x7FFFFFFF).try_into().unwrap();
         let is_latin1 = (data & 0x80000000) != 0;
-        let string = if is_latin1 {
+        if is_latin1 {
             let bytes = self.read_bytes(length);
             String::from_utf8(bytes.to_vec()).unwrap() // TODO: actual latin1
         } else {
             let bytes = self.read_bytes(length * 2);
             let shorts = u8_slice_as_u16_slice(bytes);
             String::from_utf16(shorts.as_ref()).unwrap()
-        };
-        JsonValue::String(string)
-    }
-
-    fn read_bigint(&mut self) -> JsonValue {
-        unimplemented!("bigint")
+        }
     }
 
     fn read_value(&mut self) -> JsonValue {
@@ -177,8 +173,10 @@ impl<'a> MozSerialDecoder<'a> {
                 JsonValue::Number(data.into())
             }
             data_type::BOOLEAN | data_type::BOOLEAN_OBJECT => JsonValue::Boolean(data != 0),
-            data_type::STRING | data_type::STRING_OBJECT => self.read_string_value(data),
-            data_type::BIGINT | data_type::BIGINT_OBJECT => self.read_bigint(),
+            data_type::STRING | data_type::STRING_OBJECT => {
+                JsonValue::String(self.read_string(data))
+            }
+            data_type::BIGINT | data_type::BIGINT_OBJECT => unimplemented!("bigint"),
             data_type::DATE_OBJECT => unimplemented!("date"),
             data_type::REGEXP_OBJECT => unimplemented!("regexp"),
             data_type::ARRAY_OBJECT => {
@@ -221,6 +219,90 @@ impl<'a> MozSerialDecoder<'a> {
             data_type::END_OF_KEYS => JsonValue::Null, // TODO: need sentinel to support Set object
             datatype => unimplemented!("unimplemented datatype {datatype:#X}"),
         }
+    }
+
+    fn write_string<W: Write>(&mut self, writer: &mut W, data: u32) -> std::io::Result<()> {
+        let length: usize = (data & 0x7FFFFFFF).try_into().unwrap();
+        let is_latin1 = (data & 0x80000000) != 0;
+        if is_latin1 {
+            let bytes = self.read_bytes(length);
+            writer.write_all(b"\"")?;
+            // TODO: proper escaping
+            writer.write_all(bytes)?; // TODO: actual latin1
+            writer.write_all(b"\"")?
+        } else {
+            let bytes = self.read_bytes(length * 2);
+            let shorts = u8_slice_as_u16_slice(bytes);
+            // TODO: avoid allocating
+            let string = String::from_utf16(shorts.as_ref()).unwrap();
+            write!(writer, "\"{string}\"")?;
+        }
+        Ok(())
+    }
+
+    fn write_value<W: Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        let (tag, data) = self.read_pair();
+        match tag {
+            0..data_type::FLOAT_MAX => {
+                let bytes = ((tag as u64) << 32) | (data as u64);
+                let float = f64::from_bits(bytes);
+                write!(writer, "{float}")?;
+            }
+            data_type::NULL => writer.write_all(b"null")?,
+            data_type::UNDEFINED => writer.write_all(b"null")?, // TODO
+            data_type::INT32 => write!(writer, "{}", data as i32)?,
+            data_type::BOOLEAN | data_type::BOOLEAN_OBJECT => write!(writer, "{}", data != 0)?,
+            data_type::STRING | data_type::STRING_OBJECT => self.write_string(writer, data)?,
+            data_type::BIGINT | data_type::BIGINT_OBJECT => unimplemented!("bigint"),
+            data_type::DATE_OBJECT => unimplemented!("date"),
+            data_type::REGEXP_OBJECT => unimplemented!("regexp"),
+            data_type::ARRAY_OBJECT => {
+                writer.write_all(b"[")?;
+                let mut index = 0;
+                loop {
+                    let key = self.read_value();
+                    if key == JsonValue::Null {
+                        break;
+                    }
+                    let JsonValue::Number(key) = key else {
+                        panic!()
+                    };
+                    let key = key.as_fixed_point_u64(0).unwrap() as usize;
+                    assert_eq!(key, index);
+                    if index != 0 {
+                        write!(writer, ",")?;
+                    }
+                    self.write_value(writer)?;
+                    index += 1;
+                }
+                writer.write_all(b"]")?;
+            }
+            data_type::OBJECT_OBJECT => {
+                writer.write_all(b"{")?;
+                let mut first = true;
+                loop {
+                    if self.peek_pair().0 == data_type::END_OF_KEYS {
+                        self.read_pair();
+                        break;
+                    }
+                    if first {
+                        first = false;
+                    } else {
+                        writer.write_all(b",")?;
+                    }
+                    self.write_value(writer)?;
+                    writer.write_all(b":")?;
+                    self.write_value(writer)?;
+                }
+                writer.write_all(b"}")?;
+            }
+            data_type::BACK_REFERENCE_OBJECT => unimplemented!("back reference"),
+            data_type::MAP_OBJECT => unimplemented!("map"),
+            data_type::SET_OBJECT => unimplemented!("set"),
+            data_type::END_OF_KEYS => (),
+            datatype => unimplemented!("unimplemented datatype {datatype:#X}"),
+        }
+        Ok(())
     }
 }
 
@@ -272,24 +354,35 @@ struct Args {
     database: String,
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     let conn = rusqlite::Connection::open(&args.database).unwrap();
 
+    let stdout = std::io::stdout();
+    let mut buffered = std::io::BufWriter::with_capacity(128 * 1024, stdout.lock());
+    let writer = &mut buffered;
+
     let mut stmt = conn.prepare("SELECT id, name FROM object_store").unwrap();
     let mut rows = stmt.query([]).unwrap();
-    let mut root = json::object::Object::new();
+    writer.write_all(b"{")?;
+    let mut first = true;
     while let Some(row) = rows.next().unwrap() {
         let object_store_id: u32 = row.get(0).unwrap();
         let object_store_name: String = row.get(1).unwrap();
+        if first {
+            first = false;
+        } else {
+            writer.write_all(b",")?;
+        }
+        write!(writer, "\"{object_store_name}\":[")?; // TODO: escaping?
 
         let mut stmt = conn
             .prepare("SELECT data FROM object_data WHERE object_store_id = ?")
             .unwrap();
         let mut rows = stmt.query([object_store_id]).unwrap();
         let mut output = Vec::new();
-        let mut seq = Vec::new();
+        let mut first = true;
         while let Some(row) = rows.next().unwrap() {
             let rusqlite::types::ValueRef::Blob(data) = row.get_ref(0).unwrap() else {
                 panic!();
@@ -302,12 +395,19 @@ fn main() {
             }
             decoder.decompress(data, &mut output).unwrap();
 
-            let value = read_document(&output[..output_len]);
-            seq.push(value);
+            if first {
+                first = false;
+            } else {
+                writer.write_all(b",")?;
+            }
+
+            let mut decoder = MozSerialDecoder::new(&output[..output_len]);
+            decoder.read_header();
+            decoder.read_transfer_map();
+            decoder.write_value(writer).unwrap();
         }
-        let seq = JsonValue::Array(seq);
-        root.insert(&object_store_name, seq);
+        writer.write_all(b"]")?;
     }
-    let document = JsonValue::Object(root);
-    println!("{}", document.to_string());
+    writer.write_all(b"}")?;
+    Ok(())
 }
