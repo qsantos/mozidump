@@ -249,7 +249,7 @@ impl<'a> MozSerialDecoder<'a> {
                 write!(writer, "{float}")?;
             }
             data_type::NULL => writer.write_all(b"null")?,
-            data_type::UNDEFINED => writer.write_all(b"null")?, // TODO
+            data_type::UNDEFINED => unimplemented!("undefined"),
             data_type::INT32 => write!(writer, "{}", data as i32)?,
             data_type::BOOLEAN | data_type::BOOLEAN_OBJECT => write!(writer, "{}", data != 0)?,
             data_type::STRING | data_type::STRING_OBJECT => self.write_string(writer, data)?,
