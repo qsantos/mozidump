@@ -173,7 +173,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mozidb"
+name = "mozidump"
 version = "0.1.0"
 dependencies = [
  "clap",
