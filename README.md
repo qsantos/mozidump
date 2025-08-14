@@ -1,3 +1,9 @@
-https://stackoverflow.com/questions/54920939/parsing-fb-puritys-firefox-idb-indexed-database-api-object-data-blob-from-lin
-https://github.com/whymarrh/moz-idb-edit
-https://github.com/mozilla-firefox/firefox/blob/81c9bd58447d3ba166c02e056ede3eac7d1c3066/js/src/vm/StructuredClone.cpp#L104
+# MozIDump
+
+Extract the contents of Firefox’s IndexedDB into JSON format.
+
+This is inspired by ntninja’s [`moz-idb-edit`](https://gitlab.com/ntninja/moz-idb-edit), itself inspried from a [Stack Overflow question](https://stackoverflow.com/questions/54920939/parsing-fb-puritys-firefox-idb-indexed-database-api-object-data-blob-from-lin).
+
+Also, this is 💫 blazingly fast 🚀 because it is written in Rust 🦀.
+While the Python version takes about 34 s to extract the data I care about, this program does the same in 340 ms.
+This results in a 184 MB JSON file, so a very rough calculation gives a throughput of 500 MB/s.

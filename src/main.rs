@@ -282,14 +282,16 @@ fn test() {
 }
 
 #[derive(Parser, Debug)]
+#[command(about)]
 struct Args {
-    database: String,
+    #[arg(help = "Path to a IndexedDB file; e.g. ~/.mozilla/firefox/XXXXXXXX.default/storage/default/https+++example.com/idb/YYYYYYYYYYYYYYYYY.e.sqlite")]
+    idb_file: String,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    let conn = rusqlite::Connection::open(&args.database).unwrap();
+    let conn = rusqlite::Connection::open(&args.idb_file).unwrap();
 
     let stdout = std::io::stdout();
     let mut buffered = std::io::BufWriter::with_capacity(128 * 1024, stdout.lock());

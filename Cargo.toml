@@ -1,5 +1,6 @@
 [package]
 name = "mozidump"
+description = "Extract the contents of Firefox’s IndexedDB into JSON format"
 version = "0.1.0"
 edition = "2024"
 
